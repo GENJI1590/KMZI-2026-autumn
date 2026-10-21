@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <array>
 #include <vector>
+#include <windows.h>
 
 namespace Galois {
 
@@ -307,6 +308,9 @@ static void hexDump(const char* label, const uint8_t* d, size_t n) {
 }
 
 int main() {
+    SetConsoleCP(65001);
+    SetConsoleOutputCP(65001);
+
     std::printf("=== Galois GF(2^8), p(x)=0x11B ===\n");
     uint8_t inv = Galois::inverse(0x53, 0x11B);
     std::printf("inverse(0x53) = 0x%02X  (ожидается 0xCA)\n", inv);

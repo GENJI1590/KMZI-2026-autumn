@@ -2,7 +2,7 @@
 setlocal
 
 echo Start Configuring...
-cmake -S ./src -B ./build
+cmake -S ./src -B ./build -G "MinGW Makefiles"
 if errorlevel 1 (
     echo Configuring failed!
     exit /b 1
