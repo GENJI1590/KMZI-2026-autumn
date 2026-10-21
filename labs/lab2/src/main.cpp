@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <array>
+#include <windows.h>
 
 namespace sha3impl {
 
@@ -342,6 +343,9 @@ std::size_t oaep_decode(const std::uint8_t em[MODULUS_BYTES],
 }
 
 int main() {
+    SetConsoleCP(65001);
+    SetConsoleOutputCP(65001);
+
     std::cout << "RSA-OAEP variant 10: modulus=2048, hash=SHA3-512, heap-free\n";
     std::cout << "Max message length: " << oaep::MAX_MSG_LEN << " bytes\n";
 
