@@ -356,6 +356,21 @@ bool sign(const ec::Curve& curve, const Point& G, const KeyPair& kp,
     return true;
 }
 
+KeyPair make_session_keypair(const ec::Curve& curve, const Point& G) {
+    return make_keypair(curve, G, random_scalar(curve));
+}
+
+bool sign_with_fresh_k(const ec::Curve& curve, const Point& G,
+                       const KeyPair& kp, const Int& hash, Signature& out,
+                       ct_protect::FaultReport& report) {
+    for (unsigned attempt = 0; attempt < 128; ++attempt) {
+        const Int k = random_scalar(curve);
+        if (sign(curve, G, kp, hash, k, out, report)) return true;
+        if (!report.ok()) return false;
+    }
+    return false;
+}
+
 bool verify(const ec::Curve& curve, const Point& G, const Point& Q,
             const Int& hash, const Signature& sig) {
     const Int& q = curve.q;
@@ -419,10 +434,10 @@ int main() {
     errors += check("shared secrets are equal", bigint::equal(kA, kB));
 
     std::cout << "\n--- Signature (test vector from the standard) ---\n";
-    bigint::Int d = from_hex("7A929ADE789BB9BE10ED359DD39A72C11B60961F49397EEE1D19CE9891EC3B28");
-    bigint::Int e = from_hex("2DFBC1B372D89A1188C09C52E0EEC61FCE52032AB1022E8E67ECE6672B043EE5");
-    bigint::Int k = from_hex("77105C9B20BCD3122823C8CF6FCC7B956DE33814E95B7FE64FED924594DCEAB3");
-    protocols::KeyPair kp = protocols::make_keypair(curve, G, d);
+    const bigint::Int d_test = from_hex("7A929ADE789BB9BE10ED359DD39A72C11B60961F49397EEE1D19CE9891EC3B28");
+    const bigint::Int e_test = from_hex("2DFBC1B372D89A1188C09C52E0EEC61FCE52032AB1022E8E67ECE6672B043EE5");
+    const bigint::Int k_test = from_hex("77105C9B20BCD3122823C8CF6FCC7B956DE33814E95B7FE64FED924594DCEAB3");
+    protocols::KeyPair kp = protocols::make_keypair(curve, G, d_test);
     print_point("Q", kp.Q);
     errors += check("Q = d*G equals the value from the standard",
         bigint::equal(kp.Q.x, from_hex("7F2B49E270DB6D90D8595BEC458B50C58585BA1D4E9B788F6689DBD8E56FD80B")) &&
@@ -430,34 +445,43 @@ int main() {
 
     protocols::Signature sig;
     ct_protect::FaultReport rep;
-    bool signed_ok = protocols::sign(curve, G, kp, e, k, sig, rep);
+    bool signed_ok = protocols::sign(curve, G, kp, e_test, k_test, sig, rep);
     errors += check("signature was produced", signed_ok);
     std::cout << "r = " << bigint::to_hex(sig.r) << "\n";
     std::cout << "s = " << bigint::to_hex(sig.s) << "\n";
     errors += check("(r, s) equals the value from the standard",
         bigint::equal(sig.r, from_hex("41AA28D2F1AB148280CD9ED56FEDA41974053554A42767B83AD043FD39DC0493")) &&
         bigint::equal(sig.s, from_hex("01456C64BA4642A1653C235A98A60249BCD6D3F746B631DF928014F6C5BF9C40")));
-    errors += check("valid signature is accepted", protocols::verify(curve, G, kp.Q, e, sig));
+    errors += check("valid signature is accepted", protocols::verify(curve, G, kp.Q, e_test, sig));
 
     protocols::Signature bad = sig;
     bad.s.w[0] ^= 0x01;
     errors += check("signature with corrupted byte of s is rejected",
-                    !protocols::verify(curve, G, kp.Q, e, bad));
+                    !protocols::verify(curve, G, kp.Q, e_test, bad));
 
-    std::cout << "\n--- Signature with random k ---\n";
+    std::cout << "\n--- Signature in a new session ---\n";
+    protocols::KeyPair session_kp = protocols::make_session_keypair(curve, G);
+    const bigint::Int e_session = e_test;
     protocols::Signature sig2;
-    bool signed2 = protocols::sign(curve, G, alice, e, protocols::random_scalar(curve), sig2, rep);
-    errors += check("signature with random k was produced", signed2);
-    std::cout << "r = " << bigint::to_hex(sig2.r) << "\n";
-    std::cout << "s = " << bigint::to_hex(sig2.s) << "\n";
-    errors += check("signature with random k is accepted",
-                    signed2 && protocols::verify(curve, G, alice.Q, e, sig2));
+    bool signed2 = protocols::sign_with_fresh_k(
+        curve, G, session_kp, e_session, sig2, rep);
+    errors += check("new session uses a fresh private key",
+                    !bigint::equal(session_kp.d, kp.d));
+    errors += check("signature with fresh session key and k was produced", signed2);
+    if (signed2) {
+        std::cout << "Session Q.x = " << bigint::to_hex(session_kp.Q.x) << "\n";
+        std::cout << "Session Q.y = " << bigint::to_hex(session_kp.Q.y) << "\n";
+        std::cout << "r = " << bigint::to_hex(sig2.r) << "\n";
+        std::cout << "s = " << bigint::to_hex(sig2.s) << "\n";
+    }
+    errors += check("signature in a new session is accepted",
+                    signed2 && protocols::verify(curve, G, session_kp.Q, e_session, sig2));
 
     std::cout << "\n--- Fault injection protection ---\n";
     protocols::KeyPair faulty_d = kp;
     faulty_d.d.w[3] ^= 0x00000100;
     protocols::Signature tmp;
-    bool res = protocols::sign(curve, G, faulty_d, e, k, tmp, rep);
+    bool res = protocols::sign(curve, G, faulty_d, e_test, k_test, tmp, rep);
     std::cout << "fault in d : Q == d*G: " << rep.key_matches
               << ", Q on curve: " << rep.q_on_curve
               << ", C on curve: " << rep.c_on_curve << "\n";
@@ -465,7 +489,7 @@ int main() {
 
     protocols::KeyPair faulty_q = kp;
     faulty_q.Q.y.w[0] ^= 0x00000001;
-    res = protocols::sign(curve, G, faulty_q, e, k, tmp, rep);
+    res = protocols::sign(curve, G, faulty_q, e_test, k_test, tmp, rep);
     std::cout << "fault in Q : Q == d*G: " << rep.key_matches
               << ", Q on curve: " << rep.q_on_curve
               << ", C on curve: " << rep.c_on_curve << "\n";
@@ -475,9 +499,9 @@ int main() {
     bigint::Int k_big = curve.q;
     k_big.w[0] += 5;
     errors += check("signing is refused when k >= q",
-                    !protocols::sign(curve, G, kp, e, k_big, tmp, rep));
+                    !protocols::sign(curve, G, kp, e_test, k_big, tmp, rep));
     errors += check("signing is refused when k = 0",
-                    !protocols::sign(curve, G, kp, e, bigint::zero(), tmp, rep));
+                    !protocols::sign(curve, G, kp, e_test, bigint::zero(), tmp, rep));
 
     ec::Point off_curve = G;
     off_curve.y.w[0] ^= 1;
@@ -489,9 +513,9 @@ int main() {
     bigint::Int z = from_hex("123456789ABCDEF");
     protocols::Signature forged;
     forged.r = bigint::reduce(ec::scalar_mul(curve, z, G).x, curve.q);
-    forged.s = bigint::mod_mul(z, protocols::prepare_hash(curve, e), curve.q);
+    forged.s = bigint::mod_mul(z, protocols::prepare_hash(curve, e_test), curve.q);
     errors += check("forged signature for Q = O is rejected",
-                    !protocols::verify(curve, G, ec::infinity(), e, forged));
+                    !protocols::verify(curve, G, ec::infinity(), e_test, forged));
 
     std::cout << "\n" << (errors == 0 ? "All tests passed\n" : "There are failed tests\n");
     return errors == 0 ? 0 : 1;
